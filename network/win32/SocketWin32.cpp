@@ -82,6 +82,9 @@
  * 2013-December-12  Jason Rohrer
  * Fixed bug in handling partial receive with no timeout when socket is
  * gracefully closed.
+ *
+ * 2018-November-8  Jason Rohrer
+ * Be careful that value passed into FD_SET is in range.
  */
 
 
@@ -139,19 +142,15 @@ int Socket::initSocketFramework() {
 
 
 Socket::~Socket() {
-	unsigned int *socketIDptr = (unsigned int *)( mNativeObjectPointer );
-	unsigned int socketID = socketIDptr[0];
 
     if( !mIsConnectionBroken ) {
         
         // 2 specifies shutting down both sends and receives
-        shutdown( socketID, 2 );
+        shutdown( mNativeSocketID, 2 );
         mIsConnectionBroken = true;
         }
     
-	closesocket( socketID );
-	
-	delete [] socketIDptr;
+	closesocket( mNativeSocketID );
 	}
 
 
@@ -162,8 +161,7 @@ int Socket::isConnected() {
         return 1;
         }
     
-    unsigned int *socketIDptr = (unsigned int *)( mNativeObjectPointer );
-	unsigned int socketID = socketIDptr[0];
+	unsigned int socketID = mNativeSocketID;
 
     int ret;
 	fd_set fsr;
@@ -211,11 +209,9 @@ int Socket::isConnected() {
 
 
 void Socket::setNoDelay( int inValue ) {
-	unsigned int *socketIDptr = (unsigned int *)( mNativeObjectPointer );
-	unsigned int socketID = socketIDptr[0];
 
     int flag = inValue;
-    setsockopt( socketID,
+    setsockopt( mNativeSocketID,
                 IPPROTO_TCP,
                 TCP_NODELAY,
                 (char *) &flag,
@@ -229,8 +225,7 @@ int Socket::send( unsigned char *inBuffer, int inNumBytes,
                   char inAllowedToBlock,
                   char inAllowDelay ) {
 	
-	unsigned int *socketIDptr = (unsigned int *)( mNativeObjectPointer );
-	unsigned int socketID = socketIDptr[0];
+	unsigned int socketID = mNativeSocketID;
 
     if( inAllowedToBlock ) {
         if( ! inAllowDelay ) {
@@ -286,8 +281,7 @@ int Socket::send( unsigned char *inBuffer, int inNumBytes,
 int Socket::receive( unsigned char *inBuffer, int inNumBytes,
 	long inTimeout ) {
 	
-	unsigned int *socketIDptr = (unsigned int *)( mNativeObjectPointer );
-	unsigned int socketID = socketIDptr[0];
+	unsigned int socketID = mNativeSocketID;
 	
 	int numReceived = 0;
 	
@@ -323,9 +317,22 @@ int Socket::receive( unsigned char *inBuffer, int inNumBytes,
 				recv( socketID, (char*)remainingBuffer, numRemaining, 0 );
 			}
 		else {		
+            // do this around timed_read so we can set mode back to
+            // normal regardless of return values
+            // windows doesn't have MSG_DONTWAIT
+
+            // 1 for non-blocking, 0 for blocking
+            u_long socketMode = 1;
+            ioctlsocket( socketID, FIONBIO, &socketMode );
+
 			numReceivedIn = 
 				timed_read( socketID, remainingBuffer,
                             numRemaining, inTimeout );
+
+            // back to blocking
+            socketMode = 0;
+            ioctlsocket( socketID, FIONBIO, &socketMode );
+
 
             // stop looping after one timed read
             stopLooping = true;
@@ -373,24 +380,19 @@ int Socket::receive( unsigned char *inBuffer, int inNumBytes,
 
 
 void Socket::breakConnection() {
-	unsigned int *socketIDptr = (unsigned int *)( mNativeObjectPointer );
-	unsigned int socketID = socketIDptr[0];
 
     if( !mIsConnectionBroken ) {
 
-        shutdown( socketID, 2 );
+        shutdown( mNativeSocketID, 2 );
         mIsConnectionBroken = true;
         }
     
-	closesocket( socketID );
+	closesocket( mNativeSocketID );
     }
 
 
 
 HostAddress *Socket::getRemoteHostAddress() {
-
-    unsigned int *socketIDptr = (unsigned int *)( mNativeObjectPointer );
-	unsigned int socketID = socketIDptr[0];
 
     // adapted from Unix Socket FAQ
     
@@ -398,7 +400,7 @@ HostAddress *Socket::getRemoteHostAddress() {
     struct sockaddr_in sin;
     
     len = sizeof sin;
-    int error = getpeername( socketID, (struct sockaddr *) &sin, &len );
+    int error = getpeername( mNativeSocketID, (struct sockaddr *) &sin, &len );
 
     if( error ) {
         return NULL;
@@ -425,15 +427,14 @@ HostAddress *Socket::getRemoteHostAddress() {
 
 
 HostAddress *Socket::getLocalHostAddress() {
-    unsigned int *socketIDptr = (unsigned int *)( mNativeObjectPointer );
-	unsigned int socketID = socketIDptr[0];
 
     // adapted from GTK-gnutalla code, and elsewhere
 
     struct sockaddr_in addr;
 	int len = sizeof( struct sockaddr_in );
 
-    int result = getsockname( socketID, (struct sockaddr*)( &addr ), &len );
+    int result = getsockname( mNativeSocketID, 
+                              (struct sockaddr*)( &addr ), &len );
 
     if( result == -1 ) {
         return NULL;
@@ -450,6 +451,14 @@ HostAddress *Socket::getLocalHostAddress() {
 
 
 
+
+char Socket::isSocketInFDRange() {
+    // FD_SETSIZE is NOT max socket ID on Windows
+    return true;
+    }
+
+
+
 /* timed_read adapted from gnut, by Josh Pieper */
 /* Josh Pieper, (c) 2000 */
 /* This file is distributed under the GPL, see file COPYING for details */
@@ -461,7 +470,11 @@ int timed_read( int inSock, unsigned char *inBuf,
 	fd_set fsr;
 	struct timeval tv;
 	int ret;
-	
+
+
+    // FD_SETSIZE is NOT max socket ID on Windows
+    
+    
 	FD_ZERO( &fsr );
 	FD_SET( inSock, &fsr );
  
@@ -482,6 +495,11 @@ int timed_read( int inSock, unsigned char *inBuf,
         ret = select( inSock + 1, &fsr, NULL, NULL, &tv );
         }
     
+    if( ret == 0 ) {
+        // time out after at least one EINTR
+        return -2;
+        }
+
 
 	if( ret<0 ) {
         perror( "Selecting socket during receive failed" );
@@ -497,6 +515,18 @@ int timed_read( int inSock, unsigned char *inBuf,
         // connection closed on remote end
         return -1;
         }
+
+    if( ret == -1 && 
+        ( WSAGetLastError() == WSAEINTR || 
+          WSAGetLastError() == WSAEWOULDBLOCK ) ) {
+        
+        // select came back 1, but then our recv operation was interrupted
+        // or would block
+        
+        // treat like a timeout
+        return -2;
+        }
+
 
 	return ret;
 	}

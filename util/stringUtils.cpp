@@ -41,6 +41,9 @@
  *
  * 2016-April-14    Jason Rohrer
  * Added fast int scanning function.
+ *
+ * 2018-July-19    Jason Rohrer
+ * 2x faster in-place tokenizeString implementation.
  */
 
 
@@ -334,56 +337,123 @@ char *replaceTargetListWithSubstituteList(
 
 
 
+
 SimpleVector<char *> *tokenizeString( const char *inString ) {
 
-    char *tempString = stringDuplicate( inString );
+    int len = strlen( inString );
 
-    char *restOfString = tempString;
+    int numTokensGuess = 2;
     
-    SimpleVector<char *> *foundTokens = new SimpleVector<char *>();
-
-    SimpleVector<char> *currentToken = new SimpleVector<char>();
-
-
-    while( restOfString[0] != '\0' ) {
-        // characters remain
-
-        // skip whitespace
-        char nextChar = restOfString[0];
-        while( nextChar == ' ' || nextChar == '\n' ||
-               nextChar == '\r' || nextChar == '\t' ) {
-
-            restOfString = &( restOfString[1] );
-            nextChar = restOfString[0];
-            }
-
-        if( restOfString[0] != '\0' ) {
-
-            // a token
-
-            while( nextChar != ' ' && nextChar != '\n' &&
-                   nextChar != '\r' && nextChar != '\t' &&
-                   nextChar != '\0'  ) {
-
-                // still not whitespace
-                currentToken->push_back( nextChar );
-                
-                restOfString = &( restOfString[1] );
-                nextChar = restOfString[0];
-                }
-
-            // reached end of token
-            foundTokens->push_back( currentToken->getElementString() );
-            currentToken->deleteAll();
-            }        
+    int wordCountGuess = len / 5;
+    
+    if( wordCountGuess > numTokensGuess ) {
+        numTokensGuess = wordCountGuess;
         }
 
-    delete [] tempString;
+    SimpleVector<char *> *foundTokens = 
+        new SimpleVector<char *>( numTokensGuess );
 
-    delete currentToken;
+    
+    if( len == 0 ) {
+        return foundTokens;
+        }
+
+    char *tempString = stringDuplicate( inString );
+    
+    int i = 0;
+    
+    while( i < len ) {
+        
+        char nextChar = tempString[i];
+        
+        int tokenLen = 0;
+        char *tokenStart = &( tempString[i] );
+        
+        // optimization trick
+        // printable characters are all greater than space
+        // tab, newlines, and all other token separators. are below 
+        // in the ascii space
+        // this provides a slight speedup
+        while( nextChar > ' ' ) {
+            i++;
+            tokenLen ++;
+            nextChar = tempString[i];
+            }
+        // found one of our token separators
+        // replace with \0 to terminate our token
+        tempString[i] = '\0';
+        i++;
+
+        if( tokenLen > 0 ) {
+            foundTokens->push_back( stringDuplicate( tokenStart ) );
+            }
+        }
+    
+    
+
+    delete [] tempString;
+    
 
     return foundTokens;
     }
+
+
+
+
+SimpleVector<char *> *tokenizeStringInPlace( char *inString ) {
+
+    int len = strlen( inString );
+
+    int numTokensGuess = 2;
+    
+    int wordCountGuess = len / 5;
+    
+    if( wordCountGuess > numTokensGuess ) {
+        numTokensGuess = wordCountGuess;
+        }
+
+    SimpleVector<char *> *foundTokens = 
+        new SimpleVector<char *>( numTokensGuess );
+
+    
+    if( len == 0 ) {
+        return foundTokens;
+        }
+
+    int i = 0;
+    
+    while( i < len ) {
+        
+        char nextChar = inString[i];
+        
+        int tokenLen = 0;
+        char *tokenStart = &( inString[i] );
+        
+        // optimization trick
+        // printable characters are all greater than space
+        // tab, newlines, and all other token separators. are below 
+        // in the ascii space
+        // this provides a slight speedup
+        while( nextChar > ' ' ) {
+            i++;
+            tokenLen ++;
+            nextChar = inString[i];
+            }
+        // found one of our token separators
+        // replace with \0 to terminate our token
+        inString[i] = '\0';
+        i++;
+
+        if( tokenLen > 0 ) {
+            foundTokens->push_back( tokenStart );
+            }
+        }
+
+    return foundTokens;
+    }
+
+
+
 
 
 
@@ -439,6 +509,15 @@ char *autoSprintf( const char* inFormatString, ... ) {
     
     return result;
     }
+
+
+
+// visual studio doesn't have va_copy
+// suggested fix here:
+// https://stackoverflow.com/questions/558223/va-copy-porting-to-visual-c
+#ifndef va_copy
+    #define va_copy( dest, src ) ( dest = src )
+#endif
 
 
 

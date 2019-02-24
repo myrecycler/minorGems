@@ -268,13 +268,16 @@ function rs_setupDatabase() {
             "last_game_seconds INT NOT NULL," .
             "game_count INT NOT NULL," .
             "game_total_seconds INT NOT NULL," .
+            "INDEX( game_total_seconds )," .
             // -1 if not submitted yet
             "review_score TINYINT NOT NULL," .
+            "INDEX( review_score )," .
             "review_name VARCHAR(20) NOT NULL," .
             "review_text TEXT NOT NULL," .
             // stats about player's state when they posted the review
             // they may have played more games since the review
             "review_date DATETIME NOT NULL," .
+            "INDEX( review_date )," .
             "review_game_seconds INT NOT NULL," .
             "review_game_count INT NOT NULL," .
             // in future, we may allow users to upvote/downvote reviews
@@ -383,12 +386,62 @@ function rs_showData( $checkPassword = true ) {
         }
     
     global $tableNamePrefix, $remoteIP;
+
+
+    $query = "SELECT COUNT(*) ".
+            "FROM $tableNamePrefix"."user_stats;";
+
+    $result = rs_queryDatabase( $query );
+    
+    $count = rs_mysqli_result( $result, 0, 0 );
+
+    $halfCount = round( $count / 2 );
+
+    $query = "SELECT game_total_seconds ".
+        "FROM $tableNamePrefix"."user_stats ORDER BY game_total_seconds DESC ".
+        "LIMIT $halfCount, 1;";
+
+    $result = rs_queryDatabase( $query );
+    
+    $medianSec = rs_mysqli_result( $result, 0, 0 );
+
+    $medianTime = rs_secondsToTimeSummary( $medianSec );
+
+    
+    $query = "SELECT game_count ".
+        "FROM $tableNamePrefix"."user_stats ORDER BY game_count DESC ".
+        "LIMIT $halfCount, 1;";
+
+    $result = rs_queryDatabase( $query );
+    
+    $medianGames = rs_mysqli_result( $result, 0, 0 );
+
+
+    
+
+    $query =
+        "SELECT SUM( game_total_seconds ) / COUNT(*) ".
+        "   as average_game_total_seconds, ".
+        "SUM( game_count ) / COUNT(*) ".
+        "   as average_game_count ".
+        "FROM $tableNamePrefix"."user_stats;";
+    $result = rs_queryDatabase( $query );
+
+    $average_game_total_seconds =
+        rs_mysqli_result( $result, 0, "average_game_total_seconds" );
+
+    $averageTotal = rs_secondsToTimeSummary( $average_game_total_seconds );
+        
+    $average_game_count = rs_mysqli_result( $result, 0, "average_game_count" );
     
 
     echo "<table width='100%' border=0><tr>".
         "<td>[<a href=\"server.php?action=show_data" .
             "\">Main</a>] [<a href='server.php?action=regen_static_html'>".
         "Regen HTML</a>]</td>".
+        "<td align=center>Average: ".
+        "$averageTotal spent in $average_game_count games<br>".
+        "Median: $medianTime spent in $medianGames games</td>". 
         "<td align=right>[<a href=\"server.php?action=logout" .
             "\">Logout</a>]</td>".
         "</tr></table><br><br><br>";
@@ -438,8 +491,8 @@ function rs_showData( $checkPassword = true ) {
     
              
     $query = "SELECT *, ".
-        "TIME_TO_SEC(".
-        "    TIMEDIFF( last_game_date, first_game_date) ) as play_span, ".
+        "TIMESTAMPDIFF( SECOND, first_game_date, last_game_date ) ".
+        "   as play_span, ".
         "ROUND( game_total_seconds / game_count ) as average_game_seconds ".
         "FROM $tableNamePrefix"."user_stats $keywordClause".
         "ORDER BY $order_by $orderDir ".
@@ -573,6 +626,10 @@ function rs_showData( $checkPassword = true ) {
         if( $oldLen > 80 ) {
             $review_text = $review_text . " ...";
             }
+
+        $review_text = wordwrap( $review_text, 20, " ", true );
+
+        
         
         $encodedEmail = urlencode( $email );
 
@@ -655,6 +712,8 @@ function rs_showDetail( $checkPassword = true ) {
     
     
     $review_text = preg_replace( '/\n/', "<br>", $review_text );
+
+    $review_text = wordwrap( $review_text, 20, " ", true );
     
     echo "<b>Review:</b><br> ".
         "<table width=600 border=1 cellpadding=5 cellspacing=0><tr><td>$review_text</td></tr></table>";
@@ -789,6 +848,9 @@ function rs_getReviewHTML( $inID, $inWidth=600, $inTextLengthLimit = -1 ) {
         $text = $text .
             "<tr><td colspan=2>Posted $reviewAgo ago</td></tr></table>";
         }
+
+    
+    $review_text = wordwrap( $review_text, 20, " ", true );
     
     $text = $text .
         "<div style='border-top: 2px solid gray'></div><br>".
@@ -887,7 +949,7 @@ function rs_getListHTML( $inOrderBy, $inAction, $inWidth = -1,
     $prevShown = false;
     
     if( $inSkip > 0 ) {
-        $prev = $inSkip - $reviewListLength;
+        $prev = $inSkip - $displayListLength;
         if( $prev < 0 ) {
             $prev = 0;
             }
@@ -900,7 +962,7 @@ function rs_getListHTML( $inOrderBy, $inAction, $inWidth = -1,
         $prevShown = true;
         }
 
-    $next = $inSkip + $reviewListLength;
+    $next = $inSkip + $displayListLength;
 
     $query = "SELECT COUNT(*) FROM $tableNamePrefix"."user_stats ".
         "WHERE review_score != -1 $posNegClause ".
@@ -1844,7 +1906,7 @@ function rs_checkPassword( $inFunctionName ) {
             $nonce = rs_hmac_sha1( $ticketGenerationSecret, uniqid() );
             
             $callURL =
-                "http://api2.yubico.com/wsapi/2.0/verify?id=$yubicoClientID".
+                "https://api2.yubico.com/wsapi/2.0/verify?id=$yubicoClientID".
                 "&otp=$yubikey&nonce=$nonce";
             
             $result = trim( file_get_contents( $callURL ) );

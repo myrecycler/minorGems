@@ -244,6 +244,10 @@ static AsyncFileThread fileReadThread;
 
 // some settings
 
+static int cursorMode = 0;
+static double emulatedCursorScale = 1.0;
+
+
 // size of game image
 int gameWidth = 320;
 int gameHeight = 240;
@@ -569,15 +573,16 @@ void cleanUpAtExit() {
     
     AppLog::info( "exiting...\n" );
 
-    AppLog::info( "exiting: Deleting sceneHandler\n" );
-    delete sceneHandler;
-
-
     if( soundOpen ) {
         AppLog::info( "exiting: calling SDL_CloseAudio\n" );
         SDL_CloseAudio();
         }
     soundOpen = false;
+
+
+    AppLog::info( "exiting: Deleting sceneHandler\n" );
+    delete sceneHandler;
+
 
 
     AppLog::info( "Freeing sound sprites\n" );
@@ -2704,6 +2709,42 @@ void setCursorVisible( char inIsVisible ) {
 
 
 
+void setCursorMode( int inMode ) {
+    SettingsManager::setSetting( "cursorMode", inMode );
+    cursorMode = inMode;
+    
+    switch( cursorMode ) {
+        case 0:
+        case 2:
+            setCursorVisible( true );
+            break;
+        case 1:
+            setCursorVisible( false );
+            break;
+        }
+    }
+
+
+int getCursorMode() {
+    return cursorMode;
+    }
+
+
+
+void setEmulatedCursorScale( double inScale ) {
+    SettingsManager::setSetting( "emulatedCursorScale", inScale );
+    emulatedCursorScale = inScale;
+    }
+
+
+    
+double getEmulatedCursorScale() {
+    return emulatedCursorScale;
+    }
+
+
+
+
 void grabInput( char inGrabOn ) {
     if( inGrabOn ) {
         SDL_WM_GrabInput( SDL_GRAB_ON );
@@ -2735,11 +2776,10 @@ static int mouseDownSteps = 1000;
 static char ignoreNextMouseEvent = false;
 static int xCoordToIgnore, yCoordToIgnore;
 
-void warpMouseToCenter( int *outNewMouseX, int *outNewMouseY ) {
-    *outNewMouseX = screenWidth / 2;
-    *outNewMouseY = screenHeight / 2;
 
-    if( *outNewMouseX == lastMouseX && *outNewMouseY == lastMouseY ) {
+
+static void warpMouseToScreenPos( int inX, int inY ) {
+    if( inX == lastMouseX && inY == lastMouseY ) {
         // mouse already there, no need to warp
         // (and warping when already there may or may not generate
         //  an event on some platforms, which causes trouble when we
@@ -2753,13 +2793,30 @@ void warpMouseToCenter( int *outNewMouseX, int *outNewMouseY ) {
             // not ignoring mouse events currently due to demo code panel
             // or loading message... frame drawer not inited yet
             ignoreNextMouseEvent = true;
-            xCoordToIgnore = *outNewMouseX;
-            yCoordToIgnore = *outNewMouseY;
+            xCoordToIgnore = inX;
+            yCoordToIgnore = inY;
             }    
 
-        SDL_WarpMouse( *outNewMouseX, *outNewMouseY );
+        SDL_WarpMouse( inX, inY );
         }
+    }
+
     
+
+
+void warpMouseToCenter( int *outNewMouseX, int *outNewMouseY ) {
+    *outNewMouseX = screenWidth / 2;
+    *outNewMouseY = screenHeight / 2;
+
+    warpMouseToScreenPos( *outNewMouseX, *outNewMouseY );
+    }
+
+
+
+void warpMouseToWorldPos( float inX, float inY ) {
+    int worldX, worldY;
+    worldToScreen( inX, inY, &worldX, &worldY );
+    warpMouseToScreenPos( worldX, worldY );
     }
 
 
@@ -3030,6 +3087,59 @@ void GameSceneHandler::drawScene() {
                          targetFrameRate,
                          screen->getCustomRecordedGameData(),
                          screen->isPlayingBack() );
+        
+        int readCursorMode = SettingsManager::getIntSetting( "cursorMode", -1 );
+        
+
+        if( readCursorMode == -1 ) {
+            // never set before
+
+            // check if we are ultrawidescreen
+            char ultraWide = false;
+            
+            const SDL_VideoInfo* currentScreenInfo = SDL_GetVideoInfo();
+        
+            int currentW = currentScreenInfo->current_w;
+            int currentH = currentScreenInfo->current_h;
+
+            double aspectRatio = (double)currentW / (double)currentH;
+            
+            // give a little wiggle room above 16:9
+            // ultrawide starts at 21:9
+            if( aspectRatio > 18.0 / 9.0 ) {
+                ultraWide = true;
+                }
+
+            if( ultraWide ) {
+                // drawn cursor, because system native cursor
+                // is off-target on ultrawide displays
+                
+                setCursorMode( 1 );
+                
+                double startingScale = 1.0;
+                
+                int forceBigPointer = 
+                    SettingsManager::getIntSetting( "forceBigPointer", 0 );
+                if( forceBigPointer ||
+                    screenWidth > 1920 || screenHeight > 1080 ) {
+                    
+                    startingScale *= 2;
+                    }
+                setEmulatedCursorScale( startingScale );
+                }
+            }
+        else {
+            setCursorMode( readCursorMode );
+
+            double readCursorScale = 
+                SettingsManager::getIntSetting( "emulatedCursorScale", -1 );
+            
+            if( readCursorScale != -1 ) {
+                setEmulatedCursorScale( readCursorScale );
+                }
+            }
+        
+
 
         frameDrawerInited = true;
         
@@ -3054,6 +3164,80 @@ void GameSceneHandler::drawScene() {
         
         drawFrame( update );
         
+        if( cursorMode > 0 ) {
+            // draw emulated cursor
+
+            // draw using same projection used to drawFrame
+            // so that emulated cursor lines up with screen position of buttons
+            
+            float xf, yf;
+            screenToWorld( lastMouseX, lastMouseY, &xf, &yf );
+            
+            double x = xf;
+            double y = yf;
+            
+            double sizeFactor = 25 * emulatedCursorScale;
+
+            // white border of pointer 
+
+            setDrawColor( 1, 1, 1, 1 );
+
+            double vertsA[18] = 
+                { // body of pointer
+                    x, y,
+                    x, y - sizeFactor * 0.8918,
+                    x + sizeFactor * 0.6306, y - sizeFactor * 0.6306,
+                    // left collar of pointer
+                    x, y,
+                    x, y - sizeFactor * 1.0,
+                    x + sizeFactor * 0.2229, y - sizeFactor * 0.7994,
+                    // right collar of pointer
+                    x + sizeFactor * 0.4077, y - sizeFactor * 0.7229,
+                    x + sizeFactor * 0.7071, y - sizeFactor * 0.7071,
+                    x, y };
+
+            drawTriangles( 3, vertsA );
+            
+            // neck of pointer
+            double vertsB[8] = { 
+                x + sizeFactor * 0.2076, y - sizeFactor * 0.7625,
+                x + sizeFactor * 0.376, y - sizeFactor * 1.169,
+                x + sizeFactor * 0.5607, y - sizeFactor * 1.0924,
+                x + sizeFactor * 0.3924, y - sizeFactor * 0.6859 };
+                                
+            drawQuads( 1, vertsB );
+
+           
+            // black fill of pointer
+            setDrawColor( 0, 0, 0, 1 );
+            
+            double vertsC[18] = 
+                { // body of pointer
+                    x + sizeFactor * 0.04, y - sizeFactor * 0.0966,
+                    x + sizeFactor * 0.04, y - sizeFactor * 0.814,
+                    x + sizeFactor * 0.5473, y - sizeFactor * 0.6038,
+                    // left collar of pointer
+                    x + sizeFactor * 0.04, y - sizeFactor * 0.0966,
+                    x + sizeFactor * 0.04, y - sizeFactor * 0.9102,
+                    x + sizeFactor * 0.2382, y - sizeFactor * 0.7319,
+                    // right collar of pointer
+                    x + sizeFactor * 0.3491, y - sizeFactor * 0.6859,
+                    x + sizeFactor * 0.6153, y - sizeFactor * 0.6719,
+                    x + sizeFactor * 0.04, y - sizeFactor * 0.0966 };
+
+            drawTriangles( 3, vertsC );
+            
+            // neck of pointer
+            double vertsD[8] = { 
+                x + sizeFactor * 0.2229, y - sizeFactor * 0.6949,
+                x + sizeFactor * 0.3976, y - sizeFactor * 1.1167,
+                x + sizeFactor * 0.5086, y - sizeFactor * 1.0708,
+                x + sizeFactor * 0.3338, y - sizeFactor * 0.649 };
+                                
+            drawQuads( 1, vertsD );
+            }
+        
+
         if( recordAudio ) {
             // frame-accurate audio recording
             int samplesPerFrame = soundSampleRate / targetFrameRate;
@@ -3359,6 +3543,37 @@ void screenToWorld( int inX, int inY, float *outX, float *outY ) {
         }
     
     }
+
+
+void worldToScreen( float inX, float inY, int *outX, int *outY ) {
+    if( mouseWorldCoordinates ) {
+        // inverse of screenToWorld
+        inX -= viewCenterX;
+        inX /= viewSize;
+        
+        inX *= screenWidth;
+        inX += screenWidth/2;
+        
+        *outX = round( inX );
+        
+
+        inY -= viewCenterY;
+        inY /= viewSize;
+        
+        inY *= -screenWidth;
+        inY += screenHeight/2;
+        
+        *outY = round( inY );
+        }
+    else {
+        // raw screen coordinates
+        *outX = inX;
+        *outY = inY;
+        }
+    }
+
+
+
 
 
 
@@ -4015,13 +4230,18 @@ const char *translate( const char *inTranslationKey ) {
 
 
 
-void saveScreenShot( const char *inPrefix ) {
+static Image **screenShotImageDest = NULL;
+
+
+void saveScreenShot( const char *inPrefix, Image **outImage ) {
     if( screenShotPrefix != NULL ) {
         delete [] screenShotPrefix;
         }
     screenShotPrefix = stringDuplicate( inPrefix );
     shouldTakeScreenshot = true;
     manualScreenShot = true;
+
+    screenShotImageDest = outImage;
     }
 
 
@@ -4244,11 +4464,17 @@ void takeScreenShot() {
     
 
 
-    FileOutputStream tgaStream( file );
     
-    screenShotConverter.formatImage( screenImage, &tgaStream );
-
-    delete screenImage;
+    
+    if( screenShotImageDest != NULL ) {
+        // skip writing to file
+        *screenShotImageDest = screenImage;
+        }
+    else {
+        FileOutputStream tgaStream( file );
+        screenShotConverter.formatImage( screenImage, &tgaStream );
+        delete screenImage;
+        }
     
     delete file;
 
@@ -4974,6 +5200,22 @@ char isClipboardSupported() {
     }
 
 
+char isURLLaunchSupported() {
+#ifdef LINUX
+    return true;
+#elif defined(__mac__)
+    return true;
+#elif defined(WIN_32)
+    return true;
+#else
+    return false;
+#endif
+    }
+
+
+
+
+
 
 
 
@@ -5036,6 +5278,14 @@ void setClipboardText( const char *inText  ) {
     }
 
 
+void launchURL( char *inURL ) {
+    char *call = autoSprintf( "xdg-open \"%s\" &", inURL );    
+    system( call );
+    delete [] call;
+    }
+
+
+
 
 #elif defined(__mac__)
 
@@ -5077,6 +5327,15 @@ void setClipboardText( const char *inText  ) {
     
     pclose( pipe );
     }
+
+
+
+void launchURL( char *inURL ) {
+    char *call = autoSprintf( "open \"%s\"", inURL );    
+    system( call );
+    delete [] call;
+    }
+
 
 
 
@@ -5122,11 +5381,25 @@ void setClipboardText( const char *inText  ) {
     }
 
 
+void launchURL( char *inURL ) {
+    // for some reason, on Windows, need extra set of "" before quoted URL
+    // found here:
+    // https://stackoverflow.com/questions/3037088/
+    //         how-to-open-the-default-web-browser-in-windows-in-c
+    char *call = autoSprintf( "cmd /c start \"\" \"%s\"", inURL );    
+    system( call );
+    delete [] call;
+    }
+
+
 
 #else
 // unsupported platform
 char *getClipboardText() {
     return stringDuplicate( "" );
+    }
+
+void launchURL( char *inURL ) {
     }
 #endif
 
@@ -5136,6 +5409,8 @@ char *getClipboardText() {
 
 #define macLaunchExtension ".app"
 #define winLaunchExtension ".exe"
+
+#define steamGateClientName "steamGateClient"
 
 
 #ifdef LINUX
@@ -5166,6 +5441,31 @@ char relaunchGame() {
     delete [] launchTarget;
     printf( "Returning from relaunching game, exiting this process\n" );
     exit( 0 );
+    return true;
+    }
+
+char runSteamGateClient() {
+    char *launchTarget = 
+        autoSprintf( "./%s", steamGateClientName );
+
+    AppLog::infoF( "Running steamGateClient: %s", launchTarget );
+
+    int forkValue = fork();
+
+    if( forkValue == 0 ) {
+        // we're in child process, so exec command
+        char *arguments[2] = { launchTarget, NULL };
+        
+        execvp( launchTarget, arguments );
+
+        // we'll never return from this call
+                
+        // small memory leak here, but okay
+        delete [] launchTarget;
+        }
+    
+    delete [] launchTarget;
+    printf( "Returning from launching steamGateClient\n" );
     return true;
     }
     
@@ -5210,6 +5510,13 @@ char relaunchGame() {
     }
 
 
+char runSteamGateClient() {
+    // have never tested this on Mac, who knows?
+    return false;
+    }
+
+
+
 #elif defined(WIN_32)
 
 #include <windows.h>
@@ -5232,9 +5539,32 @@ char relaunchGame() {
     return true;
     }
 
+
+
+char runSteamGateClient() {
+    char *launchTarget = 
+        autoSprintf( "%s%s", steamGateClientName, winLaunchExtension );
+    
+    AppLog::infoF( "Running steamGateClient: %s", launchTarget );
+
+    char *arguments[2] = { (char*)launchTarget, NULL };
+    
+    _spawnvp( _P_NOWAIT, launchTarget, arguments );
+
+    delete [] launchTarget;
+    
+    printf( "Returning from running steamGateClient\n" );
+    return true;
+    }
+
+
 #else
 // unsupported platform
 char relaunchGame() {
+    return false;
+    }
+
+char runSteamGateClient() {
     return false;
     }
 #endif

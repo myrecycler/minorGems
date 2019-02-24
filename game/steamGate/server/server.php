@@ -113,6 +113,7 @@ $showHeaderAndFooter = false;
 
 // pages that are shown to end user have header and footer
 if( $action == "steam_login_return" ||
+    $action == "unlock_on_steam" ||
     $action == "get_steam_key" ||
     $action == "show_download_link" ) {
 
@@ -136,6 +137,9 @@ else if( $action == "steam_login_return" ) {
 else if( $action == "get_steam_key" ) {
     sg_getSteamKey();
     }
+else if( $action == "unlock_on_steam" ) {
+    sg_unlockOnSteam();
+    }
 else if( $action == "show_download_link" ) {
     sg_showDownloadLink();
     }
@@ -150,6 +154,9 @@ else if( $action == "add_steam_gift_keys" ) {
     }
 else if( $action == "show_steam_key_link" ) {
     sg_showSteamKeyLink();
+    }
+else if( $action == "force_grant_package" ) {
+    sg_forceGrantPackage();
     }
 else if( $action == "show_log" ) {
     sg_showLog();
@@ -307,12 +314,17 @@ function sg_setupDatabase() {
 
 // $inTicketID can be blank, but no free steam key will be returned
 // instead, a download link will be shown
-function sg_showSteamLoginButton( $inTicketID ) {
+// if $inUnlock is 1, the game will be unlocked for them on Steam instead
+function sg_showSteamLoginButton( $inTicketID, $inUnlock=0 ) {
     global $steamLoginURL, $serverRootURL, $fullServerURL, $steamButtonURL;
 
     // Nonce needed here?  No, because Steam's response contains a nonce
     $returnURL = $fullServerURL .
         "?action=steam_login_return&ticket_id=$inTicketID";
+
+    if( $inUnlock ) {
+        $returnURL = $returnURL . "&unlock=1";
+        }
 
 
     $queryParams = array();
@@ -340,7 +352,7 @@ function sg_showSteamLoginButton( $inTicketID ) {
 
 
 // either generate/give a steam key to this user, OR show this
-// user their non-steam download link
+// user their non-steam download link, OR unlock the game for them on steam
 function sg_steamLoginReturn() {
     // php replaces all . with _ in URL parameter names!
 
@@ -350,7 +362,7 @@ function sg_steamLoginReturn() {
     $ns = sg_requestFilter( "openid_ns", "/.*/" );
     $claimed_id = sg_requestFilter( "openid_claimed_id", "/.*/" );
 
-    preg_match( "#http://steamcommunity.com/openid/id/(\d+)#",
+    preg_match( "#https://steamcommunity.com/openid/id/(\d+)#",
                 $claimed_id, $matches );
     
     $steam_id = $matches[1];
@@ -407,14 +419,19 @@ function sg_steamLoginReturn() {
 
     $result = sg_queryDatabase( $query );
     
-    $recordExists = ( mysql_numrows( $result ) == 1 );
+    $recordExists = ( mysqli_num_rows( $result ) == 1 );
 
     
     
     // did user pass in ticket id?
     $ticket_id = sg_getQueryTicketID();
+    $unlock = sg_requestFilter( "unlock", "/[01]+/i", 0 );
+
     $steam_gift_key = "";
 
+    $passed_in_ticket_id = $ticket_id;
+    
+    
     if( ! $recordExists ) {
 
         if( $ticket_id == "" ) {
@@ -437,25 +454,32 @@ function sg_steamLoginReturn() {
             }
         }
     else {
-        $steam_gift_key = mysql_result( $result, 0, "steam_gift_key" );
-        $ticket_id = mysql_result( $result, 0, "ticket_id" );
+        $steam_gift_key = sg_mysqli_result( $result, 0, "steam_gift_key" );
+        $ticket_id = sg_mysqli_result( $result, 0, "ticket_id" );
         }
 
     
-    if( $steam_gift_key != "" ) {
+    if( $passed_in_ticket_id != "" &&
+        $passed_in_ticket_id != $ticket_id ) {
+        echo "Supplied ticket ID does not match existing ID.<br><br>";
+        return;
+        }    
+    
+    
+    if( !$unlock && $steam_gift_key != "" ) {
         sg_showSteamKey( $steam_gift_key );
         }
-    else {
+    else if( !$unlock && $passed_in_ticket_id != "" ) {
         // no steam key present... should we generate one?
 
         // verify game ownership with Steam API
         // and then DO NOT generate a key for them if they already own the game
-        $ownsGameAlready = sg_doesSteamUserOwnApp( $steam_id );
+        $trueOwner = sg_doesSteamUserOwnApp( $steam_id );
 
         
         
 
-        if( $ownsGameAlready ) {
+        if( $trueOwner != 0 ) {
             echo "You already own the game on Steam.<br><br>";
             }
         else {
@@ -469,7 +493,7 @@ function sg_steamLoginReturn() {
 
             $result = sg_queryDatabase( $query );
 
-            $numRows = mysql_numrows( $result );
+            $numRows = mysqli_num_rows( $result );
 
             if( $numRows == 0 ) {
                 sg_queryDatabase( "COMMIT;" );
@@ -481,7 +505,7 @@ function sg_steamLoginReturn() {
                 return;
                 }
 
-            $steam_gift_key = mysql_result( $result, 0, 0 );
+            $steam_gift_key = sg_mysqli_result( $result, 0, 0 );
             
             $query = "DELETE FROM ".
                 "$tableNamePrefix"."steam_key_bank ".
@@ -505,6 +529,17 @@ function sg_steamLoginReturn() {
             sg_showSteamKey( $steam_gift_key );
             }
         
+        }
+    else if( $unlock ) {
+
+        $resultID = sg_grantPackage( $steam_id );
+
+        if( $resultID != 0 ) {
+            echo "<br><br>You now own the game on Steam<br><br>";
+            }
+        else {
+            echo "<br><br>Unlocking the game for you on Steam failed.<br><br>";
+            }
         }
     
     global $ticketServerURL;
@@ -538,7 +573,7 @@ function sg_getSteamKey() {
 
     $result = sg_queryDatabase( $query );
     
-    $row = mysql_fetch_array( $result, MYSQL_ASSOC );
+    $row = mysqli_fetch_array( $result, MYSQLI_ASSOC );
         
     $steam_gift_key = $row[ "steam_gift_key" ];
 
@@ -561,6 +596,44 @@ function sg_getSteamKey() {
     echo "Log in with Steam to get your free Steam key:<br><br>";
 
     sg_showSteamLoginButton( $ticket_id );
+    
+    }
+
+
+
+
+function sg_unlockOnSteam() {
+    global $tableNamePrefix, $ticketServerURL;
+
+    $ticket_id = sg_getQueryTicketID();
+
+
+    if( ! sg_checkTicketID( $ticket_id ) ) {
+        echo "Invalid download ticket.<br><br>";
+        return;
+        }
+
+
+    // have they already unlocked the game on steam?
+    $query = "SELECT steam_id from $tableNamePrefix"."mapping ".
+        "WHERE ticket_id = '$ticket_id';";
+
+    $result = sg_queryDatabase( $query );
+    
+    $row = mysqli_fetch_array( $result, MYSQLI_ASSOC );
+        
+    $steam_id = $row[ "steam_id" ];
+
+    if( $steam_id != "" && sg_doesSteamUserOwnApp( $steam_id ) ) {        
+        echo "You have already unlocked the game on Steam.<br><br>";
+        return;
+        }
+
+    // else need to unlock one for them
+
+    echo "Log in with Steam to unlock the game:<br><br>";
+
+    sg_showSteamLoginButton( $ticket_id, 1 );
     
     }
 
@@ -645,7 +718,7 @@ function sg_countKeysInBank() {
     
     $result = sg_queryDatabase( $query );
     
-    $keysLeftInBank = mysql_result( $result, 0, 0 );
+    $keysLeftInBank = sg_mysqli_result( $result, 0, 0 );
 
     return $keysLeftInBank;
     }
@@ -654,6 +727,9 @@ function sg_countKeysInBank() {
 
 
 // Checks ownership of $steamAppID (from settings.php)
+// returns the steamID of the true owner if they have access to it (may be
+// ID of family member)
+// returns 0 if they don't own it at all.
 function sg_doesSteamUserOwnApp( $inSteamID ) {
     global $steamAppID, $steamWebAPIKey;
     
@@ -670,11 +746,103 @@ function sg_doesSteamUserOwnApp( $inSteamID ) {
                            $result, $matches );
 
     if( $matched && $matches[1] == "true" ) {
-        return true;
+
+        // make sure we return the true owner
+        $matchedB = preg_match( "#<ownersteamid>(\d+)</ownersteamid>#",
+                                $result, $matchesB );
+
+        if( $matchedB ) {
+            return $matchesB[1];
+            }
+        else {
+            return 0;
+            }
         }
     else {
-        return false;
+        return 0;
         }
+    }
+
+
+
+// Uses GrantPackage API to grant
+// returns steamID of app owner on success, 0 on failure
+function sg_grantPackage( $inSteamID ) {
+    global $steamAppID, $steamWebAPIKey, $packageID, $remoteIP;
+
+    /*
+      $url = "https://api.steampowered.com/ISteamUser/GrantPackage/v1".
+      "?format=xml".
+      "&key=$steamWebAPIKey".
+      "&steamid=$inSteamID".
+      "&packageid=$packageID".
+      "&ipaddress=$remoteIP";
+      
+      $result = file_get_contents( $url );
+    */
+
+
+    $clientIP = $remoteIP;
+
+    // Valve requiers ipv4 address in GrantPackage
+
+    if( ! filter_var( $clientIP, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 ) ) {
+        global $defaultClientIP;
+
+        sg_log( "Got non-ipv4 client address $clientIP, ".
+                "replacing with default $defaultClientIP" );
+        $clientIP = $defaultClientIP;
+        }
+    
+    
+    // GrantPackage requires POST
+
+    $postData = http_build_query(
+        array(
+            'format' => 'xml',
+            'key' => $steamWebAPIKey,
+            'steamid' => $inSteamID,
+            'packageid' => $packageID,
+            'ipaddress' => $clientIP ) );
+
+    $opts = array(
+        'http' =>
+        array(
+            'method'  => 'POST',
+            'header'  => 'Content-type: application/x-www-form-urlencoded',
+            'content' => $postData ) );
+
+    $context  = stream_context_create( $opts );
+
+    $result = file_get_contents(
+        'https://api.steampowered.com/ISteamUser/GrantPackage/v1',
+        false, $context );
+
+    // not sure about format of results from GrantPackage
+
+    
+    // instead, just turn around immediately and check for ownership
+    $ownsAppNow = sg_doesSteamUserOwnApp( $inSteamID );
+
+    if( $ownsAppNow == 0 ) {
+        // granting failed
+        echo "Unlocking attempt response:<br>".
+            "<pre>$result</pre><br><pre>";
+        echo $http_response_header[0];
+        echo "</pre><br>";
+
+        $header = $http_response_header[0];
+        sg_log( "GrantPackage failed.  ".
+                "POST data: '$postData'  ".
+                "Result header:  '$header'  ".
+                "Result body:  '$result'" );
+        }
+    else {
+        sg_log( "GrantPackage success for $inSteamID from ".
+                "IP $clientIP ($remoteIP)" );
+        }
+    
+    return $ownsAppNow;
     }
 
 
@@ -737,7 +905,9 @@ function sg_getAccount() {
         return;
         }
 
-    if( ! sg_doesSteamUserOwnApp( $steam_id ) ) {
+    $steam_id = sg_doesSteamUserOwnApp( $steam_id );
+    
+    if( $steam_id == 0 ) {
 
         echo "FAILED: You don't own the Steam App";
         return;
@@ -758,8 +928,8 @@ function sg_getAccount() {
 
     $result = sg_queryDatabase( $query );
     
-    if( mysql_numrows( $result ) == 1 ) {
-        $ticket_id = mysql_result( $result, 0, "ticket_id" );
+    if( mysqli_num_rows( $result ) == 1 ) {
+        $ticket_id = sg_mysqli_result( $result, 0, "ticket_id" );
 
         $email = sg_getTicketEmail( $ticket_id );
         }
@@ -778,6 +948,7 @@ function sg_getAccount() {
             "?action=sell_ticket".
             "&security_data=$ticketServerForcedSecurityData".
             "&email=$email".
+            "&email_opt_in=0".
             "&name=$dummyName".
             "&reference=steam".
             "&tags=$ticketServerForcedSaleTag".
@@ -829,6 +1000,89 @@ function sg_getAccount() {
     echo "$ourPublicKeyHex\n";
     echo "$email\n";
     echo "$encryptedTicketHex";
+    }
+
+
+
+function sg_forceGrantPackage( $checkPassword = true ) {
+    global $tableNamePrefix;
+
+    if( $checkPassword ) {
+        sg_checkPassword( "force_grant_package" );
+        }
+
+    $ticket_id = sg_getQueryTicketID();
+    $steam_id = sg_requestFilter( "steam_id", "/[0-9]+/i" );
+
+
+    $query = "SELECT steam_id FROM ".
+        "$tableNamePrefix"."mapping ".
+        "WHERE ticket_id = '$ticket_id';";
+
+    $result = sg_queryDatabase( $query );
+    
+    $recordExists = ( mysqli_num_rows( $result ) == 1 );
+
+    $recordMatch = false;
+    
+    if( $recordExists ) {
+        $old_steam_id = sg_mysqli_result( $result, 0, "steam_id" );
+        if( $old_steam_id != $steam_id ) {
+            echo
+                "Already have mapping for ticket_id $ticket_id:  $old_steam_id";
+            echo "<hr>";
+            sg_showData( false );
+            return;
+            }
+        else {
+            $recordMatch = true;
+            }
+        }
+
+    
+    $query = "SELECT ticket_id FROM ".
+        "$tableNamePrefix"."mapping ".
+        "WHERE steam_id = '$steam_id';";
+
+    $result = sg_queryDatabase( $query );
+    
+    $recordExists = ( mysqli_num_rows( $result ) == 1 );
+
+    if( $recordExists ) {
+        $old_ticket_id = sg_mysqli_result( $result, 0, "ticket_id" );
+        if( $old_ticket_id != $ticket_id ) {
+            echo "Already have mapping for steam_id $steam_id:  $old_ticket_id";
+            echo "<hr>";
+            sg_showData( false );
+            return;
+            }
+        else {
+            $recordMatch = true;
+            }
+        }
+    
+    $result = sg_grantPackage( $steam_id );
+
+    if( $result == 0 ) {
+        echo "GrantPackage failed<br>";
+        }
+    else {
+        echo "GrantPackage success<br>";
+
+        if( ! $recordMatch ) {
+            // make a new record for them
+            echo "Saving a mapping record from $steam_id to $ticket_id<br>";
+            sg_newMappingRecord( $steam_id, $ticket_id );
+            }
+        else {
+            echo "Already have a mapping record from".
+                " $steam_id to $ticket_id<br>";
+            }
+        }
+    
+    echo "<hr>";
+    
+    sg_showData( false );
     }
 
 
@@ -886,7 +1140,7 @@ function sg_showData( $checkPassword = true ) {
     $query = "SELECT COUNT(*) FROM $tableNamePrefix"."mapping $keywordClause;";
 
     $result = sg_queryDatabase( $query );
-    $totalMappings = mysql_result( $result, 0, 0 );
+    $totalMappings = sg_mysqli_result( $result, 0, 0 );
 
 
     $orderDir = "ASC";
@@ -901,7 +1155,7 @@ function sg_showData( $checkPassword = true ) {
         "LIMIT $skip, $recordsPerPage;";
     $result = sg_queryDatabase( $query );
     
-    $numRows = mysql_numrows( $result );
+    $numRows = mysqli_num_rows( $result );
 
     $startSkip = $skip + 1;
     
@@ -974,10 +1228,10 @@ function sg_showData( $checkPassword = true ) {
 
 
     for( $i=0; $i<$numRows; $i++ ) {
-        $steam_id = mysql_result( $result, $i, "steam_id" );
-        $ticket_id = mysql_result( $result, $i, "ticket_id" );
-        $steam_gift_key = mysql_result( $result, $i, "steam_gift_key" );
-        $creation_date = mysql_result( $result, $i, "creation_date" );
+        $steam_id = sg_mysqli_result( $result, $i, "steam_id" );
+        $ticket_id = sg_mysqli_result( $result, $i, "ticket_id" );
+        $steam_gift_key = sg_mysqli_result( $result, $i, "steam_gift_key" );
+        $creation_date = sg_mysqli_result( $result, $i, "creation_date" );
         
         echo "<tr>\n";
         
@@ -1021,6 +1275,19 @@ function sg_showData( $checkPassword = true ) {
     </FORM>
     <hr>
 
+
+    <FORM ACTION="server.php" METHOD="post">
+    <INPUT TYPE="hidden" NAME="action" VALUE="force_grant_package">
+         Grant package:<br>
+         ticket_id:
+    <INPUT TYPE="text" MAXLENGTH=40 SIZE=23 NAME="ticket_id"
+             VALUE=""><br>
+    steam_id:
+    <INPUT TYPE="text" MAXLENGTH=40 SIZE=23 NAME="steam_id"
+             VALUE="">
+    <INPUT TYPE="Submit" VALUE="Grant">
+    </FORM>
+    <hr>
 
 <?php
 
@@ -1095,7 +1362,8 @@ function sg_addSteamGiftKeys() {
 
     $result = sg_queryDatabase( $query );
 
-    $numInserted = mysql_affected_rows();
+    global $sg_mysqlLink;
+    $numInserted = mysqli_affected_rows( $sg_mysqlLink );
 
     echo "<br>Successfully added $numInserted keys.";
     }
@@ -1164,7 +1432,7 @@ function sg_showLog() {
     $query = "SELECT COUNT(*) FROM $tableNamePrefix"."log;";
 
     $result = sg_queryDatabase( $query );
-    $totalEntries = mysql_result( $result, 0, 0 );
+    $totalEntries = sg_mysqli_result( $result, 0, 0 );
 
 
     
@@ -1172,7 +1440,7 @@ function sg_showLog() {
         "ORDER BY log_id DESC LIMIT $skip, $entriesPerPage;";
     $result = sg_queryDatabase( $query );
 
-    $numRows = mysql_numrows( $result );
+    $numRows = mysqli_num_rows( $result );
 
 
 
@@ -1216,8 +1484,8 @@ function sg_showLog() {
         
     
     for( $i=0; $i<$numRows; $i++ ) {
-        $time = mysql_result( $result, $i, "entry_time" );
-        $entry = htmlspecialchars( mysql_result( $result, $i, "entry" ) );
+        $time = sg_mysqli_result( $result, $i, "entry_time" );
+        $entry = htmlspecialchars( sg_mysqli_result( $result, $i, "entry" ) );
 
         echo "<b>$time</b>:<br><pre>$entry</pre><hr>\n";
         }
@@ -1268,13 +1536,13 @@ function sg_connectToDatabase() {
     
     
     $sg_mysqlLink =
-        mysql_connect( $databaseServer, $databaseUsername, $databasePassword )
+        mysqli_connect( $databaseServer, $databaseUsername, $databasePassword )
         or sg_operationError( "Could not connect to database server: " .
-                              mysql_error() );
+                              mysqli_error( $sg_mysqlLink ) );
     
-    mysql_select_db( $databaseName )
+    mysqli_select_db( $sg_mysqlLink, $databaseName )
         or sg_operationError( "Could not select $databaseName database: " .
-                              mysql_error() );
+                              mysqli_error( $sg_mysqlLink ) );
     }
 
 
@@ -1285,7 +1553,7 @@ function sg_connectToDatabase() {
 function sg_closeDatabase() {
     global $sg_mysqlLink;
     
-    mysql_close( $sg_mysqlLink );
+    mysqli_close( $sg_mysqlLink );
     }
 
 
@@ -1305,11 +1573,11 @@ function sg_queryDatabase( $inQueryString ) {
         sg_connectToDatabase();
         }
     
-    $result = mysql_query( $inQueryString );
+    $result = mysqli_query( $sg_mysqlLink, $inQueryString );
     
     if( $result == FALSE ) {
 
-        $errorNumber = mysql_errno();
+        $errorNumber = mysqli_errno( $sg_mysqlLink );
         
         // server lost or gone?
         if( $errorNumber == 2006 ||
@@ -1324,22 +1592,32 @@ function sg_queryDatabase( $inQueryString ) {
             sg_closeDatabase();
             sg_connectToDatabase();
 
-            $result = mysql_query( $inQueryString, $sg_mysqlLink )
+            $result = mysqli_query( $sg_mysqlLink, $inQueryString )
                 or sg_operationError(
                     "Database query failed:<BR>$inQueryString<BR><BR>" .
-                    mysql_error() );
+                    mysqli_error( $sg_mysqlLink ) );
             }
         else {
             // some other error (we're still connected, so we can
             // add log messages to database
             sg_fatalError( "Database query failed:<BR>$inQueryString<BR><BR>" .
-                           mysql_error() );
+                           mysqli_error( $sg_mysqlLink ) );
             }
         }
 
     return $result;
     }
 
+
+
+/**
+ * Replacement for the old mysql_result function.
+ */
+function sg_mysqli_result( $result, $number, $field=0 ) {
+    mysqli_data_seek( $result, $number );
+    $row = mysqli_fetch_array( $result );
+    return $row[ $field ];
+    }
 
 
 /**
@@ -1356,12 +1634,12 @@ function sg_doesTableExist( $inTableName ) {
     $query = "SHOW TABLES";
     $result = sg_queryDatabase( $query );
 
-    $numRows = mysql_numrows( $result );
+    $numRows = mysqli_num_rows( $result );
 
 
     for( $i=0; $i<$numRows && ! $tableExists; $i++ ) {
 
-        $tableName = mysql_result( $result, $i, 0 );
+        $tableName = sg_mysqli_result( $result, $i, 0 );
         
         if( $tableName == $inTableName ) {
             $tableExists = 1;
@@ -1373,10 +1651,10 @@ function sg_doesTableExist( $inTableName ) {
 
 
 function sg_log( $message ) {
-    global $enableLog, $tableNamePrefix;
+    global $enableLog, $tableNamePrefix, $sg_mysqlLink;
 
     if( $enableLog ) {
-        $slashedMessage = mysql_real_escape_string( $message );
+        $slashedMessage = mysqli_real_escape_string( $sg_mysqlLink, $message );
     
         $query = "INSERT INTO $tableNamePrefix"."log( entry, entry_time ) ".
             "VALUES( '$slashedMessage', CURRENT_TIMESTAMP );";
@@ -1595,7 +1873,7 @@ function sg_checkPassword( $inFunctionName ) {
             $nonce = sg_hmac_sha1( $serverSecretKey, uniqid() );
             
             $callURL =
-                "http://api2.yubico.com/wsapi/2.0/verify?id=$yubicoClientID".
+                "https://api2.yubico.com/wsapi/2.0/verify?id=$yubicoClientID".
                 "&otp=$yubikey&nonce=$nonce";
             
             $result = trim( file_get_contents( $callURL ) );

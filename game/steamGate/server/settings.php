@@ -44,6 +44,13 @@ $steamWebAPIKey = "REPLACE_ME";
 $steamAppID = "249570";
 
 
+// the package ID for GrantPackage calls
+$packageID = "155870";
+
+
+// client IP to supply to Valve if client IP unknown (or ipv6 only)
+$defaultClientIP = "72.14.184.149";
+
 
 
 // End Basic settings

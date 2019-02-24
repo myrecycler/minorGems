@@ -21,11 +21,13 @@
 /////////////////////
 // settings:
 static const char *steamGateServerURL = 
-"http://thecastledoctrine.net/sg/server.php";
+"http://onehouronelife.com/steamGate/server.php";
 
-#define linuxLaunchTarget "./CastleDoctrineApp"
-#define macLaunchTarget "CastleDoctrine.app"
-#define winLaunchTarget "CastleDoctrine.exe"
+#define linuxLaunchTarget "./OneLifeApp"
+#define macLaunchTarget "OneLife.app"
+#define winLaunchTarget "OneLife.exe"
+
+#define gameName "One Hour One Life"
 
 // end settings
 /////////////////////
@@ -36,6 +38,7 @@ static const char *steamGateServerURL =
 
 #include <unistd.h>
 #include <stdarg.h>
+#include <sys/wait.h>
 
 static void launchGame() {
     AppLog::info( "Launching game." );
@@ -48,6 +51,17 @@ static void launchGame() {
         execvp( "open", arguments );
 
         // we'll never return from this call
+        }
+    else {
+        // parent
+        AppLog::infoF( "Waiting for child game process %d to exit.",
+                       forkValue );
+        double startTime = Time::getCurrentTime();
+        int returnStatus;    
+        waitpid( forkValue, &returnStatus, 0 );
+
+        AppLog::infoF( "Child game process ran for %f minutes before exiting.",
+                       ( Time::getCurrentTime() - startTime ) / 60 );
         }
     }
 
@@ -88,6 +102,7 @@ static void showMessage( const char *inTitle, const char *inMessage,
 
 #include <unistd.h>
 #include <stdarg.h>
+#include <sys/wait.h>
 
 static void launchGame() {
     AppLog::info( "Launching game" );
@@ -100,6 +115,17 @@ static void launchGame() {
         execvp( linuxLaunchTarget, arguments );
 
         // we'll never return from this call
+        }
+    else {
+        // parent
+        AppLog::infoF( "Waiting for child game process %d to exit.",
+                       forkValue );
+        double startTime = Time::getCurrentTime();
+        int returnStatus;    
+        waitpid( forkValue, &returnStatus, 0 );
+
+        AppLog::infoF( "Child game process ran for %f minutes before exiting.",
+                       ( Time::getCurrentTime() - startTime ) / 60 );
         }
     }
 
@@ -138,7 +164,13 @@ static void launchGame() {
     AppLog::info( "Launching game" );
     char *arguments[2] = { (char*)winLaunchTarget, NULL };
     
-    _spawnvp( _P_NOWAIT, winLaunchTarget, arguments );
+    AppLog::infoF( "Waiting for child game process to exit after launching." );
+    double startTime = Time::getCurrentTime();
+    
+    _spawnvp( _P_WAIT, winLaunchTarget, arguments );
+    
+    AppLog::infoF( "Child game process ran for %f minutes before exiting.",
+                   ( Time::getCurrentTime() - startTime ) / 60 );
     }
 
 
@@ -146,7 +178,7 @@ static void launchGame() {
 
 static void showMessage( const char *inTitle, const char *inMessage,
                          char inError = false ) {
-    UINT uType = MB_OK;
+    UINT uType = MB_OK | MB_TOPMOST;
     
     if( inError ) {
         uType |= MB_ICONERROR;
@@ -238,7 +270,7 @@ void AuthTicketListener::OnAuthSessionTicketResponse(
 
 
 static void showTicketCreationError() {
-    showMessage( "The Castle Doctrine:  Error",
+    showMessage( gameName ":  Error",
                  "Could not create an account for you on the game server.",
                  true );
     }
@@ -252,30 +284,80 @@ int main() {
     AppLog::setLog( new FileLog( "log_steamGate.txt" ) );
     AppLog::setLoggingLevel( Log::DETAIL_LEVEL );
 
-    char *code = SettingsManager::getStringSetting( "downloadCode" );
+
+    // before we even check for login info, see if we've been tasked
+    // with marking the app as dirty
+    FILE *f = fopen( "steamGateForceUpdate.txt", "r" );
+    if( f != NULL ) {
+        AppLog::info( "steamGateForceUpdate.txt file exists." );
+
+        int val = 0;
+        
+        fscanf( f, "%d", &val );
+        fclose( f );
+
+
+        if( val == 1 ) {
+            AppLog::info( "steamGateForceUpdate.txt file contains '1' flag." );
+
+            // we've been signaled to mark app as dirty
+            
+            if( ! SteamAPI_Init() ) {
+                showMessage( gameName ":  Error",
+                             "Failed to connect to Steam.",
+                             true );
+                AppLog::error( "Could not init Steam API." );
+                return 0;
+                }
+
+            AppLog::info( "Calling MarkContentCorrupt." );
+
+            // only check for missing files
+            // not sure what this param does if a new depot is available
+            SteamApps()->MarkContentCorrupt( true );
+            
+            // done, mark so we skip this next time
+            f = fopen( "steamGateForceUpdate.txt", "w" );
+            if( f != NULL ) {
+                fprintf( f, "0" );
+                fclose( f );
+                }
+            
+            AppLog::info( "Done forcing update, exiting." );
+            SteamAPI_Shutdown();
+            return 0;
+            }
+        }
+
+
+    char *accountKey = SettingsManager::getStringSetting( "accountKey" );
     char *email = SettingsManager::getStringSetting( "email" );
 
 
-    if( code != NULL && email != NULL ) {
+    if( accountKey != NULL && 
+        email != NULL &&
+        strcmp( accountKey, "" ) != 0 &&
+        strcmp( email, "" ) != 0 ) {
 
-        delete [] code;
+        delete [] accountKey;
         delete [] email;
         
-        AppLog::info( "We already have saved login info.  Exiting." );
+        AppLog::info( "We already have saved login info.  Launching game." );
         launchGame();
+        AppLog::info( "Exiting." );
         return 0;
         }
 
     
-    if( code != NULL ) {
-        delete [] code;
+    if( accountKey != NULL ) {
+        delete [] accountKey;
         }
      
     if( email != NULL ) {
         delete [] email;
         }
     
-    showMessage( "The Castle Doctrine:  First Launch",
+    showMessage( gameName ":  First Launch",
                  "The game will try to create a server-side account for"
                  " you through Steam.\n\nThis may take a few moments." );
     
@@ -284,7 +366,7 @@ int main() {
 
     
     if( ! SteamAPI_Init() ) {
-        showMessage( "The Castle Doctrine:  Error",
+        showMessage( gameName ":  Error",
                      "Failed to connect to Steam.",
                      true );
         AppLog::error( "Could not init Steam API." );
@@ -337,7 +419,7 @@ int main() {
 
     if( authTicketSize == 0 ) {
         
-        showMessage( "The Castle Doctrine:  Error",
+        showMessage( gameName ":  Error",
                      "Could not get an Authentication Ticket from Steam.",
                      true );
         AppLog::error( "GetAuthSessionTicket returned 0 length." );
@@ -354,7 +436,7 @@ int main() {
     
     while( ! authTicketCallbackCalled ) {
         if( Time::getCurrentTime() - startTime > maxTime ) {
-            showMessage( "The Castle Doctrine:  Error",
+            showMessage( gameName ":  Error",
                          "Timed out waiting for "
                          "Authentication Ticket validation from Steam.",
                          true );
@@ -373,7 +455,7 @@ int main() {
     delete listener;
     
     if( authTicketCallbackError ) {
-        showMessage( "The Castle Doctrine:  Error",
+        showMessage( gameName ":  Error",
                      "Could not validate the Steam Authentication Ticket.",
                      true );
         AppLog::error( "GetAuthSessionTicket callback returned error." );
@@ -398,7 +480,7 @@ int main() {
         getCryptoRandomBytes( ourSecretKey, 32 );
     
     if( ! gotSecret ) {
-        showMessage( "The Castle Doctrine:  Error",
+        showMessage( gameName ":  Error",
                      "Could not get random data to generate an "
                      "encryption key.",
                      true );
@@ -528,7 +610,7 @@ int main() {
     AppLog::infoF( "Decrypted ticket as:  %s", plaintextTicket );
     
     SettingsManager::setSetting( "email", email );
-    SettingsManager::setSetting( "downloadCode", plaintextTicket );
+    SettingsManager::setSetting( "accountKey", plaintextTicket );
     
     
     delete [] plaintextTicket;
@@ -538,11 +620,12 @@ int main() {
     
     SteamAPI_Shutdown();
 
-    showMessage( "The Castle Doctrine:  First Launch",
+    showMessage( gameName ":  First Launch",
                  "Your server account is set up.\n\n"
                  "The game will launch now." );
 
     launchGame();
     
+    AppLog::info( "Exiting." );
     return 0;
     }

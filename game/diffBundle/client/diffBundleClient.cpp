@@ -119,6 +119,23 @@ char startUpdate( char *inUpdateServerURL, int inOldVersionNumber ) {
     
         return false;
         }
+
+
+    // make sure we're not being built from inside a working git
+    // checkout.  Don't want to download updates in this context
+    File gitFileA( NULL, ".git" );
+    File gitFileB( NULL, "../.git" );
+    File gitFileC( NULL, "../../.git" );
+    File gitFileD( NULL, "../../../.git" );
+
+
+    if( gitFileA.exists() ||
+        gitFileB.exists() ||
+        gitFileC.exists() ||
+        gitFileD.exists() ) {
+    
+        return false;
+        }
     
 
     File binaryFlagFile( NULL, "binary.txt" );
@@ -571,16 +588,29 @@ static int applyUpdateFromWebResult() {
                         // and no \r, which is part of windows \r\n
                         // and other platforms, or ill-formed, line endings
 
-                        char found;
-                        char *convertedContents =
-                            replaceAll( contents, "\n", "\r\n", &found );
-                        
-                        if( convertedContents != NULL ) {
-                            
-                            targetFile.writeToFile( convertedContents );
 
-                            delete [] convertedContents;
+                        // replaceAll too slow in this case
+                        // some files have 20k + newlines to replace
+                        SimpleVector<char> newContents;
+                        
+                        int oldLen = strlen( contents );
+                        
+                        for( int i=0; i<oldLen; i++ ) {
+                            if( contents[i] == '\n' ) {
+                                newContents.push_back( '\r' );
+                                newContents.push_back( '\n' );
+                                }
+                            else {
+                                newContents.push_back( contents[i] );
+                                }
                             }
+                        
+                        char *convertedContents = 
+                            newContents.getElementString();
+                        
+                        targetFile.writeToFile( convertedContents );
+                        
+                        delete [] convertedContents;
                         }
                     delete [] contents;
                     }
@@ -788,6 +818,9 @@ int stepUpdate() {
             
                 int numParts;
                 char **parts = split( result, "#", &numParts );
+                
+                delete [] result;
+                
                 
                 if( numParts > 0 ) {
                     // "URLS\n"

@@ -8,6 +8,7 @@
 // and the underlying platform
 
 #include "doublePair.h"
+#include "minorGems/graphics/Image.h"
 
 
 
@@ -305,6 +306,13 @@ void setClipboardText( const char *inText );
 
 
 
+char isURLLaunchSupported();
+
+
+void launchURL( char *inURL );
+
+
+
 
 // sample rate shared by game engine and sound rendering platform
 //#define gameSoundSampleRate 22050
@@ -459,6 +467,31 @@ void setLetterbox( float inVisibleWidth, float inVisibleHeight );
 void setCursorVisible( char inIsVisible );
 
 
+
+
+// cursorMode and emulatedCursorSize are remembered in settings folder
+// for future runs
+
+// these override behavior of setCursorVisible
+
+// 0 (default) is system cursor
+// 1 is emulated cursor drawn at current mouse location
+// 2 is both (system cursor shown and emulated cursor
+void setCursorMode( int inMode );
+
+
+int getCursorMode();
+
+
+// scale multiple from default size
+void setEmulatedCursorScale( double inScale );
+
+
+double getEmulatedCursorScale();
+
+
+
+
 // confines mouse pointer to window and prevents window manager
 // from intercepting key presses
 // default off
@@ -480,9 +513,16 @@ void setMouseReportingMode( char inWorldCoordinates );
 void warpMouseToCenter( int *outNewMouseX, int *outNewMouseY );
 
 
+void warpMouseToWorldPos( float inX, float inY );
+
+
 // converts screen coordinates to current world coordinates
 // (will be screen coordinates if mouse reporting mode is not World)
 void screenToWorld( int inX, int inY, float *outX, float *outY );
+
+
+void worldToScreen( float inX, float inY, int *outX, int *outY );
+
 
 // gets the last raw screen position of the mouse (press, release, drag, move)
 void getLastMouseScreenPos( int *outX, int *outY );
@@ -527,7 +567,14 @@ char isGamePlayingBack();
 
 // save a screenshot to the "screenShots" folder
 // screenshot may be delayed until the end of the next redraw.
-void saveScreenShot( const char *inPrefix );
+// outImage is a pointer to where a newly-constructed image should be returned
+// when screenshot is finally done
+// If returned this way, resulting image destroyed by caller
+//
+// if outImage is NOT NULL, then screen shot is NOT automatically saved to
+// screenShots folder (and inPrefix is ignored).
+void saveScreenShot( const char *inPrefix, 
+                     Image **outImage = NULL );
 
 
 // equivalent to the outputAllFrames.ini setting, but
@@ -608,9 +655,17 @@ unsigned char *getAsyncFileData( int inHandle, int *outDataLength );
 
 
 
-// relaunches the game from scratch as a new process
+// relaunches the game from scratch as a new process, and triggers exit
 // returns false if relaunch not supported on this platform
 char relaunchGame();
+
+
+
+// runs the platform-specific steamGateClient as a new process
+// does NOT exit.
+// steamGateClient runs in parallel.
+// returns false if running steamGateClient is not supported on this platform
+char runSteamGateClient();
 
 
 
