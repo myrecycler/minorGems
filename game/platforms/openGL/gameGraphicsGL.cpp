@@ -666,6 +666,12 @@ void setSpriteCenterOffset( SpriteHandle inSprite, doublePair inOffset ) {
 
 
 
+// FOVMOD NOTE:  Change 1/2 - Take these lines during the merge process
+void setSpriteWrapping( SpriteHandle inSprite, char inHorizontal, char inVertical ) {
+    SpriteGL *sprite = (SpriteGL *)inSprite;
+    sprite->setWrapping( inHorizontal, inVertical );
+}
+
 
 
 void startCountingSpritePixelsDrawn() {
@@ -752,6 +758,20 @@ void drawSprite( SpriteHandle inSprite, doublePair inCornerPos[4],
     numSpritesDrawn++;
     }
 
+
+
+// FOVMOD NOTE:  Change 2/2 - Take these lines during the merge process
+void drawSprite( SpriteHandle inSprite, doublePair inCornerPos[4],
+                 doublePair inTexCoords[4] ) {
+    SpriteGL *sprite = (SpriteGL *)inSprite;
+
+    sprite->draw( 0,
+                  inCornerPos,
+                  inTexCoords,
+                  linearTextureFilterOn, mipMapTextureFilterOn );
+
+    numSpritesDrawn++;
+    }
 
 
 void drawSpriteAlphaOnly( SpriteHandle inSprite, doublePair inCenter, 
