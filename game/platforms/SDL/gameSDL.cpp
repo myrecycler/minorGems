@@ -2187,7 +2187,7 @@ int mainFunction( int inNumArgs, char **inArgs ) {
 
     
     // translation language
-    File *languageNameFile = new File( NULL, "language.txt" );
+    File *languageNameFile = new File( NULL, "language_zh.txt" );
 
     if( languageNameFile->exists() ) {
         char *languageNameText = languageNameFile->readFileContents();
