@@ -2721,6 +2721,9 @@ void setCursorMode( int inMode ) {
         case 1:
             setCursorVisible( false );
             break;
+        default:
+            setCursorVisible( true );
+            break;
         }
     }
 
@@ -2732,7 +2735,7 @@ int getCursorMode() {
 
 
 void setEmulatedCursorScale( double inScale ) {
-    SettingsManager::setSetting( "emulatedCursorScale", inScale );
+    SettingsManager::setDoubleSetting( "emulatedCursorScale", inScale );
     emulatedCursorScale = inScale;
     }
 
@@ -3091,7 +3094,7 @@ void GameSceneHandler::drawScene() {
         int readCursorMode = SettingsManager::getIntSetting( "cursorMode", -1 );
         
 
-        if( readCursorMode == -1 ) {
+        if( readCursorMode < 0 ) {
             // never set before
 
             // check if we are ultrawidescreen
@@ -3132,9 +3135,10 @@ void GameSceneHandler::drawScene() {
             setCursorMode( readCursorMode );
 
             double readCursorScale = 
-                SettingsManager::getIntSetting( "emulatedCursorScale", -1 );
+                SettingsManager::
+                getDoubleSetting( "emulatedCursorScale", -1.0 );
             
-            if( readCursorScale != -1 ) {
+            if( readCursorScale >= 1 ) {
                 setEmulatedCursorScale( readCursorScale );
                 }
             }
@@ -5176,8 +5180,10 @@ char isHardToQuitMode() {
 
 
 
+#ifdef LINUX
 static char clipboardSupportKnown = false;
 static char clipboardSupport = false;
+#endif
 
 
 char isClipboardSupported() {
@@ -5392,7 +5398,13 @@ void launchURL( char *inURL ) {
     // found here:
     // https://stackoverflow.com/questions/3037088/
     //         how-to-open-the-default-web-browser-in-windows-in-c
-    char *call = autoSprintf( "cmd /c start \"\" \"%s\"", inURL );    
+    
+    // the wmic method allows spawning a browser without it lingering as
+    // a child process
+    // https://steamcommunity.com/groups/steamworks/
+    //         discussions/0/154645427521397803/
+    char *call = autoSprintf( 
+        "wmic process call create 'cmd /c start \"\" \"%s\"'", inURL );    
     system( call );
     delete [] call;
     }
@@ -5605,7 +5617,7 @@ char isSoundRecordingSupported() {
 #elif defined(__mac__)
     return false;
 #elif defined(WIN_32)
-    return false;
+    return true;
 #else
     return false;
 #endif
@@ -5697,15 +5709,64 @@ int16_t *stopRecording16BitMonoSound( int *outNumSamples ) {
 
 #elif defined(WIN_32)
 
+#include <mmsystem.h>
+
 const char *arecordFileName = "inputSound.wav";
+static int arecordSampleRate = 0;
 
 // windows implementation does nothing for now
 char startRecording16BitMonoSound( int inSampleRate ) {
+
+    arecordSampleRate = inSampleRate;
+    
+    if( mciSendString( "open new type waveaudio alias my_sound", 
+                       NULL, 0, 0 ) == 0 ) { 
+
+        char *settingsString = 
+            autoSprintf( "set my_sound alignment 2 bitspersample 16"
+                         " samplespersec %d"
+                         " channels 1"
+                         " bytespersec %d"
+                         " time format milliseconds format tag pcm",
+                         inSampleRate,
+                         ( 16 * inSampleRate ) / 8 );
+        
+        mciSendString( settingsString, NULL, 0, 0 );
+        
+        delete [] settingsString;
+
+        mciSendString( "record my_sound", NULL, 0, 0 );
+        return true;
+        }
+
     return false;
     }
 
 int16_t *stopRecording16BitMonoSound( int *outNumSamples ) {
-    return NULL;
+    mciSendString( "stop my_sound", NULL, 0, 0 );
+    
+    char *saveCommand = autoSprintf( "save my_sound %s", arecordFileName );
+    
+    mciSendString( saveCommand, NULL, 0, 0 );
+    delete [] saveCommand;
+    
+    mciSendString( "close my_sound", NULL, 0, 0 );
+    
+    int rate = -1;
+
+    int16_t *data = load16BitMonoSound( outNumSamples, &rate );
+
+    if( rate != arecordSampleRate ) {
+        *outNumSamples = 0;
+        
+        if( data != NULL ) {
+            delete [] data;
+            }
+        return NULL;
+        }
+    else {
+        return data;
+        }
     }
 
 #else
